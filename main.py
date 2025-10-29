@@ -15,11 +15,25 @@ exchange = ccxt.binance({
 def webhook_logic(data):
     print("🔹 Начало обработки запроса")
     try:
+        # Проверяем, что data — это словарь
+        if not isinstance(data, dict):
+            print(f"❌ Ошибка: data не словарь, тип: {type(data)}")
+            return {'error': 'Invalid data format'}, 400
+
         action = data.get('action', '').lower()
         symbol = data.get('symbol', '').upper()
-        quantity = float(data.get('quantity', 0))
+        quantity = data.get('quantity')
 
-        print(f"🔹 Получено: action={action}, symbol={symbol}, quantity={quantity}")
+        # Проверяем, что quantity — число
+        if quantity is None:
+            print("❌ Ошибка: quantity отсутствует")
+            return {'error': 'Missing quantity'}, 400
+
+        try:
+            quantity = float(quantity)
+        except (TypeError, ValueError):
+            print(f"❌ Ошибка: quantity не число: {quantity}")
+            return {'error': 'Quantity must be a number'}, 400
 
         if not action or not symbol or quantity <= 0:
             print("❌ Ошибка: отсутствуют обязательные поля")
@@ -50,7 +64,6 @@ def webhook_logic(data):
 
         elif final_action == 'close':
             print("🔹 Пытаемся закрыть позицию без проверки...")
-            # Просто пытаемся закрыть, не проверяя позицию
             close_side = 'SELL' if quantity > 0 else 'BUY'
             params = {'reduceOnly': True}
             try:
