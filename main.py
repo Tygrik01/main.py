@@ -1,88 +1,135 @@
 from flask import Flask, request, jsonify
+import ccxt
 import os
 import logging
 
-# Настраиваем логирование
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
+# Инициализация биржи
+exchange = ccxt.binance({
+    'apiKey': os.getenv('BINANCE_API_KEY'),
+    'secret': os.getenv('BINANCE_SECRET'),
+    'enableRateLimit': True,
+    'options': {'defaultType': 'future'},
+})
+
+def get_position(symbol):
+    """Получить текущую позицию"""
+    try:
+        positions = exchange.fetch_positions([symbol])
+        for pos in positions:
+            if pos['symbol'] == symbol and float(pos['contracts']) != 0:
+                return pos
+        return None
+    except Exception as e:
+        logger.error(f"❌ Ошибка получения позиции: {e}")
+        return None
+
 @app.route('/webhook', methods=['POST'])
 @app.route('/mebhook', methods=['POST'])
+@app.route('/nebhook', methods=['POST'])
 def webhook():
     logger.info("🔧 Получен вебхук запрос")
     
     try:
-        # Логируем заголовки
-        logger.info(f"📨 Headers: {dict(request.headers)}")
-        logger.info(f"📨 Content-Type: {request.content_type}")
-        
-        # Получаем сырые данные
-        raw_data = request.get_data(as_text=True)
-        logger.info(f"📨 Raw data: {raw_data}")
-        
-        # Пробуем распарсить JSON
-        try:
-            data = request.get_json(force=True)
-            logger.info(f"✅ JSON данные: {data}")
-        except Exception as e:
-            logger.error(f"❌ Ошибка парсинга JSON: {e}")
-            return jsonify({'error': f'Invalid JSON: {str(e)}'}), 400
-        
+        data = request.get_json(force=True)
+        logger.info(f"📨 Данные: {data}")
+
         if not data:
-            logger.error("❌ Пустые данные")
             return jsonify({'error': 'No data received'}), 400
 
-        # Простая проверка полей
-        action = data.get('action')
-        symbol = data.get('symbol')
-        quantity = data.get('quantity')
-        
-        logger.info(f"🔍 Action: {action}, Symbol: {symbol}, Quantity: {quantity}")
+        # Исправляем опечатку: 'syntax' → 'symbol'
+        action = data.get('action', '').lower()
+        symbol = data.get('symbol') or data.get('syntax', '').upper()  # Исправление здесь!
+        quantity = data.get('quantity', 0)
+        position_size = data.get('position_size', 0)
+
+        logger.info(f"🔍 Action: {action}, Symbol: {symbol}, Quantity: {quantity}, Position_size: {position_size}")
 
         # Валидация
         if not action:
             return jsonify({'error': 'Missing action field'}), 400
         if not symbol:
             return jsonify({'error': 'Missing symbol field'}), 400
-        if not quantity:
-            return jsonify({'error': 'Missing quantity field'}), 400
-
-        # Преобразуем quantity в число
-        try:
-            quantity = float(quantity)
-        except (TypeError, ValueError) as e:
-            return jsonify({'error': f'Invalid quantity: {quantity}'}), 400
-
-        # Возвращаем успешный ответ
-        response = {
-            'status': 'success',
-            'message': f'Received {action} order for {symbol}',
-            'quantity': quantity,
-            'action': action
-        }
         
-        logger.info(f"✅ Успешный ответ: {response}")
-        return jsonify(response), 200
+        # Определяем количество для ордера
+        if position_size and float(position_size) != 0:
+            order_quantity = abs(float(position_size))
+        else:
+            order_quantity = float(quantity)
 
+        if order_quantity <= 0:
+            return jsonify({'error': 'Invalid quantity'}), 400
+
+        # Логика торговли
+        if action == 'buy':
+            # Открываем лонг позицию
+            order = exchange.create_market_order(symbol, 'buy', order_quantity)
+            logger.info(f"🟢 Открыта лонг позиция: {order}")
+            return jsonify({
+                'status': 'success',
+                'message': 'Long position opened',
+                'order_id': order['id']
+            }), 200
+
+        elif action == 'sell':
+            # Сначала проверяем есть ли открытая позиция
+            current_position = get_position(symbol)
+            
+            if current_position and float(current_position['contracts']) != 0:
+                # Закрываем позицию
+                contracts = float(current_position['contracts'])
+                close_side = 'sell' if contracts > 0 else 'buy'
+                
+                params = {'reduceOnly': True}
+                order = exchange.create_market_order(symbol, close_side, abs(contracts), params=params)
+                logger.info(f"🔴 Закрыта позиция: {order}")
+                return jsonify({
+                    'status': 'success', 
+                    'message': 'Position closed',
+                    'order_id': order['id']
+                }), 200
+            else:
+                # Открываем шорт позицию
+                order = exchange.create_market_order(symbol, 'sell', order_quantity)
+                logger.info(f"🟢 Открыта шорт позиция: {order}")
+                return jsonify({
+                    'status': 'success',
+                    'message': 'Short position opened', 
+                    'order_id': order['id']
+                }), 200
+
+        else:
+            return jsonify({'error': f'Invalid action: {action}'}), 400
+
+    except ccxt.InsufficientFunds as e:
+        logger.error(f"💸 Недостаточно средств: {e}")
+        return jsonify({'error': 'Insufficient funds'}), 400
+    except ccxt.ExchangeError as e:
+        logger.error(f"🏦 Ошибка биржи: {e}")
+        return jsonify({'error': f'Exchange error: {str(e)}'}), 500
     except Exception as e:
-        logger.error(f"💥 Критическая ошибка: {e}", exc_info=True)
-        return jsonify({'error': f'Internal server error: {str(e)}'}), 500
+        logger.error(f"💥 Ошибка: {e}")
+        return jsonify({'error': str(e)}), 500
 
 @app.route('/', methods=['GET'])
 def health_check():
-    return jsonify({'status': 'running', 'message': 'Webhook server is working!'}), 200
+    return jsonify({'status': 'running'}), 200
 
-@app.route('/test', methods=['POST'])
-def test_webhook():
-    """Endpoint для тестирования"""
-    test_data = {
-        'action': 'buy',
-        'symbol': 'BTCUSDT',
-        'quantity': 0.001
-    }
-    return jsonify({'test_data': test_data, 'message': 'Use this format for webhook'}), 200
+@app.route('/position/<symbol>', methods=['GET'])
+def check_position(symbol):
+    """Проверить позицию"""
+    try:
+        position = get_position(symbol.upper())
+        if position:
+            return jsonify({'position': position}), 200
+        else:
+            return jsonify({'status': 'No position found'}), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 10000))
