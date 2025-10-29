@@ -13,30 +13,59 @@ exchange = ccxt.binance({
 })
 
 def webhook_logic(data):
+    print("🔹 Начало обработки запроса")
     try:
         action = data.get('action', '').lower()
         symbol = data.get('symbol', '').upper()
         quantity = float(data.get('quantity', 0))
 
+        print(f"🔹 Получено: action={action}, symbol={symbol}, quantity={quantity}")
+
         if not action or not symbol or quantity <= 0:
-            return {'error': 'Missing required fields'}, 400
+            print("❌ Ошибка: отсутствуют обязательные поля")
+            return {'error': 'Missing required fields (action, symbol, quantity)'}, 400
 
+        # Маппинг: buy → open, sell → close
         if action == 'buy':
+            final_action = 'open'
             final_side = 'BUY'
-            order = exchange.create_market_order(symbol, final_side, quantity)
-            return {'status': 'Futures position opened', 'order': order}, 200
-
         elif action == 'sell':
+            final_action = 'close'
+        else:
+            print(f"❌ Ошибка: неверное действие: {action}")
+            return {'error': f'Invalid action: {action}. Expect buy/sell'}, 400
+
+        print(f"🔹 Действие: {final_action}, сторона: {final_side}")
+
+        # Ордер для фьючерсов через CCXT
+        if final_action == 'open':
+            print("🔹 Открываем позицию...")
+            try:
+                order = exchange.create_market_order(symbol, final_side, quantity)
+                print(f"🟢 Успешно открыта позиция: {order}")
+                return {'status': 'Futures position opened', 'order': order}, 200
+            except Exception as e:
+                print(f"❌ Ошибка при открытии позиции: {e}")
+                return {'error': f'Failed to open position: {str(e)}'}, 500
+
+        elif final_action == 'close':
+            print("🔹 Пытаемся закрыть позицию без проверки...")
+            # Просто пытаемся закрыть, не проверяя позицию
             close_side = 'SELL' if quantity > 0 else 'BUY'
             params = {'reduceOnly': True}
-            order = exchange.create_market_order(symbol, close_side, abs(quantity), params=params)
-            return {'status': 'Futures position closed', 'order': order}, 200
+            try:
+                order = exchange.create_market_order(symbol, close_side, abs(quantity), params=params)
+                print(f"✅ Успешно закрыта позиция: {order}")
+                return {'status': 'Futures position closed', 'order': order}, 200
+            except Exception as e:
+                print(f"❌ Ошибка при закрытии: {e}")
+                if 'reduceOnly' in str(e):
+                    print("🟡 Позиция не найдена — пропускаем")
+                    return {'status': 'No open position to close'}, 200
+                return {'error': f'Failed to close position: {str(e)}'}, 500
 
-    except ccxt.OrderNotFillable as e:
-        if 'reduceOnly' in str(e):
-            return {'status': 'No open position to close'}, 200
-        return {'error': str(e)}, 500
     except Exception as e:
+        print(f"💥 Неожиданная ошибка: {e}")
         return {'error': str(e)}, 500
 
 @app.route('/webhook', methods=['POST'])
