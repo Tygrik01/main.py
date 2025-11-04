@@ -10,8 +10,8 @@ app = Flask(__name__)
 
 # Инициализация биржи
 exchange = ccxt.binance({
-    'apiKey': os.getenv('BINANCE_API_KEY'),
-    'secret': os.getenv('BINANCE_SECRET'),
+    'apiKey': "DPyTFfPEY6SPfOcmjfMy935MPPZ4m8FFDWvqAZKWwzmcb0Ie1enbbdELv3FT996L",
+    'secret': "cY6e7HOG8L10J7QhfjAWk3VVXK05lI6jj3CY5LdxBHFfD4BDpBnxzNQzeiReR5jm",
     'enableRateLimit': True,
     'options': {'defaultType': 'future'},
 })
